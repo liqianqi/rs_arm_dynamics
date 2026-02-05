@@ -19,7 +19,17 @@
 #include "inverse_kinematics.h"
 #include "cartesian_planner.h"
 #include "joint_trajectory.h"
+#include "driver.h"
 #include <fstream>
+#include <chrono>
+#include <thread>
+
+// 是否启用实际电机控制 (设为true时连接真实电机)
+#define ENABLE_REAL_MOTOR_CONTROL true
+
+// CAN接口配置
+#define CAN_INTERFACE "can0"
+#define MASTER_ID 0x00
 
 using namespace rs_arm;
 
@@ -101,6 +111,162 @@ void printJointAngles(const std::string& name, const IKJointAngles& q) {
     }
 }
 
+//=============================================================================
+// 电机控制器类
+//=============================================================================
+#if ENABLE_REAL_MOTOR_CONTROL
+
+/**
+ * @brief 6轴电机控制器
+ */
+class MotorController {
+public:
+    // 电机ID配置 (根据实际硬件修改)
+    static constexpr uint8_t MOTOR_IDS[6] = {1, 2, 3, 4, 5, 6};
+    
+    // 电机类型配置 (根据实际硬件修改)
+    static constexpr int MOTOR_TYPES[6] = {
+        static_cast<int>(ActuatorType::ROBSTRIDE_01),  // 电机1
+        static_cast<int>(ActuatorType::ROBSTRIDE_01),  // 电机2
+        static_cast<int>(ActuatorType::ROBSTRIDE_01),  // 电机3
+        static_cast<int>(ActuatorType::ROBSTRIDE_00),  // 电机4
+        static_cast<int>(ActuatorType::ROBSTRIDE_00),  // 电机5
+        static_cast<int>(ActuatorType::ROBSTRIDE_00),  // 电机6
+    };
+    
+    // 控制参数
+    float kp = 30.5f;   // 位置增益
+    float kd = 1.0f;    // 速度阻尼
+    
+    std::vector<std::unique_ptr<RobStrideMotor>> motors;
+    bool initialized = false;
+    
+    MotorController() = default;
+    
+    /**
+     * @brief 初始化所有电机
+     */
+    bool init(const std::string& can_interface = CAN_INTERFACE) {
+        std::cout << "\n初始化电机控制器...\n";
+        std::cout << "  CAN接口: " << can_interface << "\n";
+        
+        motors.clear();
+        
+        for (int i = 0; i < 6; ++i) {
+            try {
+                auto motor = std::make_unique<RobStrideMotor>(
+                    can_interface, MASTER_ID, MOTOR_IDS[i], MOTOR_TYPES[i]
+                );
+                motors.push_back(std::move(motor));
+                std::cout << "  电机" << (i+1) << " (ID=" << (int)MOTOR_IDS[i] << ") 初始化成功\n";
+            } catch (const std::exception& e) {
+                std::cerr << "  电机" << (i+1) << " 初始化失败: " << e.what() << "\n";
+                return false;
+            }
+        }
+        
+        initialized = true;
+        return true;
+    }
+    
+    /**
+     * @brief 使能所有电机
+     */
+    bool enableAll() {
+        if (!initialized) return false;
+        
+        std::cout << "使能所有电机...\n";
+        for (int i = 0; i < 6; ++i) {
+            auto result = motors[i]->enable_motor();
+            std::cout << "  电机" << (i+1) << " 使能, 位置=" 
+                      << std::get<0>(result) * 180 / M_PI << "°\n";
+            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        }
+        return true;
+    }
+    
+    /**
+     * @brief 发送关节角度命令 (运控模式)
+     */
+    void sendJointPositions(const std::array<double, 6>& positions,
+                           const std::array<double, 6>& velocities) {
+        if (!initialized) return;
+        
+        for (int i = 0; i < 6; ++i) {
+            float pos = static_cast<float>(positions[i]);
+            float vel = static_cast<float>(velocities[i]);
+            float torque = 0.0f;  // 运控模式下力矩由电机内部计算
+            
+            motors[i]->send_motion_command(torque, pos, vel, kp, kd);
+        }
+    }
+    
+    /**
+     * @brief 禁用所有电机
+     */
+    void disableAll() {
+        if (!initialized) return;
+        
+        std::cout << "禁用所有电机...\n";
+        for (int i = 0; i < 6; ++i) {
+            motors[i]->Disenable_Motor(0);
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }
+};
+
+/**
+ * @brief 执行轨迹 (发送到真实电机)
+ */
+void executeTrajectory(MotorController& controller, const Trajectory& traj,
+                       const std::string& name) {
+    if (!traj.valid || traj.points.empty()) {
+        std::cout << "轨迹无效，跳过执行\n";
+        return;
+    }
+    
+    std::cout << "\n执行轨迹: " << name << "\n";
+    std::cout << "  点数: " << traj.points.size() << "\n";
+    std::cout << "  时长: " << traj.total_time << " s\n";
+    std::cout << "  按 Ctrl+C 中断...\n\n";
+    
+    auto start_time = std::chrono::steady_clock::now();
+    
+    for (size_t i = 0; i < traj.points.size(); ++i) {
+        const auto& pt = traj.points[i];
+        
+        // 转换为数组格式
+        std::array<double, 6> positions, velocities;
+        for (int j = 0; j < 6; ++j) {
+            positions[j] = pt.position[j];
+            velocities[j] = pt.velocity[j];
+        }
+        
+        // 发送到电机
+        controller.sendJointPositions(positions, velocities);
+        
+        // 显示进度
+        if (i % 50 == 0 || i == traj.points.size() - 1) {
+            std::cout << "\r  进度: " << (i + 1) << "/" << traj.points.size()
+                      << " (" << std::fixed << std::setprecision(1) 
+                      << (100.0 * (i + 1) / traj.points.size()) << "%)"
+                      << "  时间: " << pt.time << "s" << std::flush;
+        }
+        
+        // 等待到下一个时间点
+        if (i < traj.points.size() - 1) {
+            double dt = traj.points[i + 1].time - pt.time;
+            std::this_thread::sleep_for(std::chrono::microseconds(
+                static_cast<long>(dt * 1)
+            ));
+        }
+    }
+    
+    std::cout << "\n轨迹执行完成!\n";
+}
+
+#endif // ENABLE_REAL_MOTOR_CONTROL
+
 /**
  * @brief 平滑运动规划器
  */
@@ -108,8 +274,8 @@ class SmoothMotionPlanner {
 public:
     SmoothMotionPlanner() {
         // 设置关节方向 (电机顺时针为正)
-        JointDirections fk_dirs = {-1, -1, -1, -1, -1, -1};
-        IKJointDirections ik_dirs = {-1, -1, -1, -1, -1, -1};
+        JointDirections fk_dirs = {-1, 1, -1, 1, -1, -1};
+        IKJointDirections ik_dirs = {-1, 1, -1, 1, -1, -1};
         
         fk_.setJointDirections(fk_dirs);
         ik_.setJointDirections(ik_dirs);
@@ -119,9 +285,11 @@ public:
         ik_config.max_iterations = 200;
         ik_config.position_tolerance = 1e-4;
         ik_config.orientation_tolerance = 1e-3;
-        // 设置关节限位: 2号电机下限为0 (只能上抬)
-        ik_config.joint_min = {-2*IK_PI, 0.0, -IK_PI, -2*IK_PI, -IK_PI/2, -2*IK_PI};
-        ik_config.joint_max = { 2*IK_PI, IK_PI/2,  IK_PI,  2*IK_PI,  IK_PI/2,  2*IK_PI};
+        // 设置关节限位
+        // 方向系数 {-1, 1, -1, 1, -1, -1}
+        // 电机2: DH正方向=电机正方向, 上抬=正值, 0度是下限位
+        ik_config.joint_min = {-IK_PI, 0.0, -IK_PI, -IK_PI/2, -IK_PI, -2*IK_PI};
+        ik_config.joint_max = { IK_PI, IK_PI,  IK_PI,  IK_PI/2,  IK_PI,  2*IK_PI};
         ik_config.use_joint_limits = true;
         ik_.setConfig(ik_config);
         
@@ -354,8 +522,8 @@ private:
 
 int main() {
     std::cout << "╔════════════════════════════════════════════════════╗\n";
-    std::cout << "║   RS-A3 机械臂平滑运动演示                         ║\n";
-    std::cout << "║   (FK + IK + 笛卡尔路径 + 关节轨迹)                 ║\n";
+    std::cout << "║   RS-A3 机械臂平滑运动演示                            ║\n";
+    std::cout << "║   (FK + IK + 笛卡尔路径 + 关节轨迹)                   ║\n";
     std::cout << "╚════════════════════════════════════════════════════╝\n";
     
     SmoothMotionPlanner planner;
@@ -382,18 +550,16 @@ int main() {
     std::cout << "【步骤2】定义目标位姿\n";
     std::cout << "========================================\n";
     
-    // 目标1: 在零位基础上，X方向前移5cm，姿态绕Z轴旋转30度
-    CPVector3 target1_pos = {zero_pos[0] + 0.05, zero_pos[1] + 0.02, zero_pos[2]};
-    CPVector3 target1_euler = {30.0 * CP_PI / 180, 0, 0};  // 绕Z轴30度
+    // 目标1: 2号电机上抬（正值），末端向上5cm
+    CPVector3 target1_pos = {zero_pos[0] - 0.01, zero_pos[1] + 0.02, zero_pos[2] + 0.05};  // 微向后，向左2cm，向上5cm
+    CPVector3 target1_euler = {90.0 * CP_PI / 180, 0, -50.0 * CP_PI / 180};  // 姿态变化
     CPMatrix3x3 target1_rot = CartesianPathPlanner::eulerToRotation(target1_euler);
     
     printPose("目标位姿1", target1_pos, target1_rot);
     
-    // 目标2: 在目标1基础上小幅移动，主要改变姿态
-    // 注意: 2号电机在0度时是下限位，只能上抬，所以目标2要尽量保持位置，只改变姿态
-    // 这样可以避免2号电机需要大幅上抬
-    CPVector3 target2_pos = {zero_pos[0] + 0.05, zero_pos[1] + 0.02, zero_pos[2]};  // 与目标1相同位置
-    CPVector3 target2_euler = {35.0 * CP_PI / 180, -5.0 * CP_PI / 180, 0};  // 小幅姿态变化
+    // 目标2: 继续向上到10cm
+    CPVector3 target2_pos = {zero_pos[0] - 0.02, zero_pos[1] + 0.03, zero_pos[2] + 0.10};  // 微向后，向左3cm，向上10cm
+    CPVector3 target2_euler = {90.0 * CP_PI / 180, -15.0 * CP_PI / 180, -30.0 * CP_PI / 180};
     CPMatrix3x3 target2_rot = CartesianPathPlanner::eulerToRotation(target2_euler);
     
     printPose("目标位姿2", target2_pos, target2_rot);
@@ -476,6 +642,51 @@ int main() {
     if (planner.exportTrajectory(combined, filename)) {
         std::cout << "\n轨迹已导出到: " << filename << "\n";
     }
+    
+#if ENABLE_REAL_MOTOR_CONTROL
+    // ========================================
+    // 步骤5.5: 执行实际电机控制
+    // ========================================
+    std::cout << "\n========================================\n";
+    std::cout << "【步骤5.5】执行实际电机控制\n";
+    std::cout << "========================================\n";
+    
+    MotorController motor_ctrl;
+    
+    // 初始化电机
+    if (!motor_ctrl.init(CAN_INTERFACE)) {
+        std::cerr << "电机初始化失败，跳过实际控制\n";
+    } else {
+        // 使能电机
+        motor_ctrl.enableAll();
+        std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        
+        std::cout << "\n准备执行轨迹，按回车键开始 (Ctrl+C取消)...\n";
+        std::cin.get();
+        
+        // 执行轨迹1: 零位 → 目标1
+        if (traj1.valid) {
+            executeTrajectory(motor_ctrl, traj1, "零位 → 目标1");
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        
+        // 执行轨迹2: 目标1 → 目标2
+        if (traj2.valid) {
+            executeTrajectory(motor_ctrl, traj2, "目标1 → 目标2");
+            std::this_thread::sleep_for(std::chrono::milliseconds(500));
+        }
+        
+        std::cout << "\n所有轨迹执行完成!\n";
+        std::cout << "按回车键禁用电机...\n";
+        std::cin.get();
+        
+        // 禁用电机
+        motor_ctrl.disableAll();
+    }
+#else
+    std::cout << "\n[提示] 实际电机控制已禁用 (ENABLE_REAL_MOTOR_CONTROL=false)\n";
+    std::cout << "[提示] 如需控制真实电机，请修改代码顶部的宏定义\n";
+#endif
     
     // ========================================
     // 步骤6: 显示完整轨迹摘要

@@ -253,13 +253,13 @@ public:
 
   // 接收 CAN 帧
   ReceiveResult receive(double timeout_sec = 0);
-
+    
   // 返回位置、速度、扭矩、温度
   std::tuple<float, float, float, float> return_data_pvtt();
 
   // 接收状态帧
   void receive_status_frame();
-
+    
   // 设置电机参数
   void Set_RobStrite_Motor_parameter(uint16_t Index, float Value,
                                      char Value_mode);
@@ -273,7 +273,7 @@ public:
 
   // 读取初始位置
   float read_initial_position();
-
+    
   // 初始化 socket
   void init_socket();
 
@@ -317,7 +317,7 @@ public:
 
   // 设置零位
   void Set_ZeroPos();
-
+    
   // 字节转 float
   float Byte_to_float(uint8_t *bytedata) {
     uint32_t data =

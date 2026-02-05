@@ -50,7 +50,7 @@ ReceiveResult RobStrideMotor::receive(double timeout_sec) {
     timeout.tv_sec = static_cast<int>(timeout_sec);
     timeout.tv_usec = static_cast<int>((timeout_sec - timeout.tv_sec) * 1e6);
     setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
-  }
+}
 
   struct can_frame frame;
   std::memset(&frame, 0, sizeof(frame));
@@ -64,7 +64,7 @@ ReceiveResult RobStrideMotor::receive(double timeout_sec) {
   // 检查是否是扩展帧
   if (!(frame.can_id & CAN_EFF_FLAG)) {
     throw std::runtime_error("Frame is not extended ID");
-  }
+}
 
   uint32_t can_id = frame.can_id & CAN_EFF_MASK;
 
@@ -233,7 +233,7 @@ std::tuple<float, float, float, float> RobStrideMotor::enable_motor() {
     perror("enable_motor failed");
   } else {
     std::cout << "[✓] Motor enable command sent." << std::endl;
-  }
+}
   receive_status_frame();
 
   return std::make_tuple(position_, velocity_, torque_, temperature_);
@@ -376,7 +376,7 @@ float RobStrideMotor::read_initial_position() {
             .count() > 10000) {
       std::cerr << "[!] Timeout waiting for motor feedback." << std::endl;
       return 0.0f;
-    }
+}
   }
 }
 
@@ -417,7 +417,7 @@ RobStrideMotor::RobStrite_Motor_PosPP_control(float Speed, float Acceleration,
     usleep(1000);
     enable_motor();
     usleep(1000);
-  }
+}
 
   Motor_Set_All.set_speed = Speed;
   Motor_Set_All.set_acc = Acceleration;
@@ -517,7 +517,7 @@ void RobStrideMotor::Set_CAN_ID(uint8_t Set_CAN_ID) {
     perror("Set_CAN_ID failed");
   } else {
     std::cout << "[✓] Motor Set_CAN_ID command sent." << std::endl;
-  }
+}
 }
 
 // 位置模式（CSP）
@@ -542,7 +542,7 @@ RobStrideMotor::RobStrite_Motor_PosCSP_control(float Speed, float Angle) {
     usleep(1000);
 
     Motor_Set_All.set_motor_mode = PosCSP_control_mode;
-  }
+}
   Set_RobStrite_Motor_parameter(0X7017, Motor_Set_All.set_speed, Set_parameter);
   Set_RobStrite_Motor_parameter(0X7016, Motor_Set_All.set_angle, Set_parameter);
   usleep(1000);

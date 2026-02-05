@@ -37,10 +37,12 @@ def motor_to_urdf_angles(q_motor):
     """
     将电机角度转换为URDF关节角度
     
-    注意：URDF模型和MDH模型的坐标系定义有差异
-    URDF角度 = -motor角度 (方向相反)
+    方向系数: {-1, 1, -1, 1, -1, -1}
+    - dir=-1: URDF角度 = -motor角度
+    - dir=+1: URDF角度 = +motor角度 (DH正方向=电机正方向)
     """
-    return -q_motor
+    dirs = np.array([-1, 1, -1, 1, -1, -1])
+    return dirs * q_motor
 
 
 def visualize_with_pybullet(urdf_path, trajectory, speed=1.0, record_video=False):

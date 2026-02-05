@@ -101,8 +101,8 @@ int main(int argc, char** argv) {
             // motor.RobStrite_Motor_PosCSP_control(velocity, position);
             
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        
+    }
+    
         // 禁用电机
         std::cout << "\n[4] 禁用电机..." << std::endl;
         motor.Disenable_Motor(0);

@@ -34,12 +34,14 @@ target_include_directories(smooth_motion_demo PRIVATE
     ${CMAKE_SOURCE_DIR}/inverse_kinematics/include
     ${CMAKE_SOURCE_DIR}/cartesian_planner/include
     ${CMAKE_SOURCE_DIR}/joint_trajectory/include
+    ${CMAKE_SOURCE_DIR}/driver/include
 )
 target_link_libraries(smooth_motion_demo
     fk_lib
     ik_lib
     cartesian_lib
     trajectory_lib
+    driver_lib
 )
 
 # ============================================
