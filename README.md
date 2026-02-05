@@ -109,3 +109,4 @@ target_include_directories(your_program PRIVATE /path/to/rs_arm_dynamics/include
 JointDirections dirs = {-1, -1, +1, -1, -1, -1};  // Joint 3 逆时针为正
 robot.setJointDirections(dirs);
 ```
+  
